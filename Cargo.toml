@@ -1,0 +1,8 @@
+[package]
+name = "fcntl"
+version = "0.1.0"
+authors = ["Fabian Würfl <bafdyce@tuta.io>"]
+edition = "2018"
+
+[dependencies]
+libc = "0.2"
