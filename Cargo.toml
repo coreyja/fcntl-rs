@@ -1,7 +1,11 @@
 [package]
 name = "fcntl"
-version = "0.1.0"
+version = "0.1.0" # remember to update html_root_url (OR use version-sync: https://rust-lang.github.io/api-guidelines/documentation.html#c-html-root)
 authors = ["Fabian Würfl <bafdyce@tuta.io>"]
+license = "MIT OR Apache-2.0"
+description = "Wrapper around fcntl (2) and convenience methods to make interacting with it easier."
+repository = "https://gitlab.com/BafDyce/fcntl-rs"
+readme = "README.md"
 edition = "2018"
 
 [dependencies]

@@ -1,4 +1,13 @@
-/// https://www.man7.org/linux/man-pages/man2/fcntl.2.html
+#![doc(html_root_url = "https://docs.rs/fcntl/0.1.0")]
+//! Wrapper around [fcntl (2)](https://www.man7.org/linux/man-pages/man2/fcntl.2.html) and convenience methods to make
+//! interacting with it easier. Currently only supports commands related to Advisory record locking.
+//
+//
+// TODO: Instead of exposing `libc::flock` we should implement our own flock which implements
+//     - `From<flock>`
+//     - `Into<flock>`
+//     - Methods from `FlockOperations` without the need for the extra trait
+//     - Other common traits (`Eq`, `PartialEq`, `Ord`, `PartialOrd`, `Hash`, `Debug`, `Display`, `Default`)
 
 use libc::{
     __errno_location,
@@ -6,6 +15,8 @@ use libc::{
 };
 use std::{
     convert::TryInto,
+    error::Error,
+    fmt::{self, Display},
     os::unix::io::AsRawFd,
 };
 
@@ -17,14 +28,15 @@ pub use libc::{
 };
 
 
-/// Allowed types for the ``arg` parameter for the `fcntl` syscall.
+/// Allowed types for the `arg` parameter for the `fcntl` syscall.
+#[derive(Copy, Clone)]
 pub enum FcntlArg {
     Flock(flock),
 }
 
 
 /// Allowed commands (`cmd` parameter) for the `fcntl` syscall.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FcntlCmd {
     /// F_SETLK,
     SetLock,
@@ -36,10 +48,10 @@ pub enum FcntlCmd {
 
 
 /// Error type which functions of this crate will return.
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FcntlError {
     /// The requested FcntlCmd is not yet handled by our implementation
-    CommandNotImplemented,
+    CommandNotImplemented(FcntlCmd),
     /// The syscall returned the respective error (which may be `None`, if the errno lookup fails)
     Errno(Option<c_int>),
     /// An `crate`-internal error occured. If you get this error variant, please report this as a bug!
@@ -51,7 +63,7 @@ pub enum FcntlError {
 
 
 /// Defines which types of lock can be set onto files.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FcntlLockType {
     /// Wrapper for `F_RDLCK`
     Read,
@@ -60,10 +72,19 @@ pub enum FcntlLockType {
 }
 
 
-/// This trait is used to defined functions wich directly operate on `flock`.
+/// This trait is used to define functions wich directly operate on `flock`.
+/// ```rust
+/// use libc::flock;
+/// use fcntl::{FcntlLockType, FlockOperations};
+///
+/// let flock = flock::default().with_locktype(FcntlLockType::Write);
+/// ```
 pub trait FlockOperations {
-    /// Sets `l_type` to the given value. This is mostly intended for internal use. Where possible, it is recommended to
-    /// use other methods which alter `l_type`.
+    /// Since we don't have control over `libc::flock` we cannot `impl Default for libc::flock`
+    fn default() -> Self;
+
+    /// Sets `l_type` to the given value using the builder pattern. This is mostly intended for internal use. Where
+    /// possible, it is recommended to use other methods which alter `l_type` (e.g. `with_locktype`).
     fn with_l_type(self, l_type: c_short) -> Self;
 
     /// Sets the lock type (`l_type`) to the appropriate value for the given `FcntlLockType`, using the builder pattern.
@@ -72,12 +93,18 @@ pub trait FlockOperations {
 
 
 /// Calls `fcntl` with the given `cmd` and `arg`. On success, the structure passed to the `arg` parameter is returned
-/// as returned by the kernel. In case of an error (syscall returned an error, invalid `arg` provided, `cmd` not
-/// supported, etc.) an appropriate `Err` is returned.
+/// as returned by the kernel.
+/// **Note**: Where possible convenience wrappers (such as `is_file_locked`, `lock_file`, etc.) should be used as they
+/// correctly interpret possible return values of the syscall.
 ///
 /// Currently supported `cmd`s:
 /// - `FcntlCmd::GetLock`
 /// - `FcntlCmd::SetLock`
+///
+/// # Errors
+///
+/// In case of an error (syscall returned an error, invalid `arg` provided, `cmd` not supported, etc.) an appropriate
+/// value is returned.
 pub fn fcntl<'a, RF>(fd: &'a RF, cmd: FcntlCmd, arg: FcntlArg) -> Result<FcntlArg, FcntlError>
 where RF: AsRawFd
 {
@@ -105,28 +132,36 @@ where RF: AsRawFd
                 _ => Err(FcntlError::InvalidArgForCmd),
             }
         }
-        FcntlCmd::SetLockWait => Err(FcntlError::CommandNotImplemented)
+        FcntlCmd::SetLockWait => Err(FcntlError::CommandNotImplemented(FcntlCmd::SetLockWait)),
     }
 }
 
 
 /// Checks whether the given file is locked.
 ///
-/// The caller is responsible that `fd` was opened with the appropriate parameters, as stated by `fcntl 2`:
+/// The caller is responsible that `fd` was opened with the appropriate parameters, as stated by
+/// [fcntl (2)](https://www.man7.org/linux/man-pages/man2/fcntl.2.html):
 /// > In order to place a read lock, `fd` must be open for reading.  In order to place a write lock, `fd` must be open
 /// for writing.  To place both types of lock, open a file read-write.
+///
+/// ```rust
+/// use std::fs::OpenOptions;
+/// use fcntl::is_file_locked;
+/// # let file_name = "README.md";
+///
+/// let file = OpenOptions::new().read(true).open(file_name).unwrap();
+/// match is_file_locked(&file, None) {
+///     Ok(true) => println!("File is currently locked"),
+///     Ok(false) => println!("File is not locked"),
+///     Err(err) => println!("Error: {:?}", err),
+/// }
+/// ```
 pub fn is_file_locked<'a, RF>(fd: &'a RF, flock: Option<flock>) -> Result<bool, FcntlError>
 where RF: AsRawFd
 {
     let arg = match flock {
         Some(flock) => FcntlArg::Flock(flock),
-        None => FcntlArg::Flock(libc::flock {
-            l_type: 0,
-            l_whence: 0,
-            l_start: 0,
-            l_len: 0,
-            l_pid: 0,
-        })
+        None => FcntlArg::Flock(libc::flock::default())
     };
 
     match fcntl(fd, FcntlCmd::GetLock, arg) {
@@ -149,19 +184,26 @@ where RF: AsRawFd
 /// The caller is responsible that `fd` was opened with the appropriate parameters, as stated by `fcntl 2`:
 /// > In order to place a read lock, `fd` must be open for reading.  In order to place a write lock, `fd` must be open
 /// for writing.  To place both types of lock, open a file read-write.
+///
+/// ```rust
+/// use std::fs::OpenOptions;
+/// use fcntl::{FcntlLockType, lock_file};
+/// # let file_name = "README.md";
+///
+/// let file = OpenOptions::new().read(true).write(true).open(file_name).unwrap();
+/// match lock_file(&file, None, Some(FcntlLockType::Write)) {
+///     Ok(true) => println!("Lock acuired!"),
+///     Ok(false) => println!("Could not acquire lock!"),
+///     Err(err) => println!("Error: {:?}", err),
+/// }
+/// ```
 pub fn lock_file<'a, RF>(fd: &'a RF, flock: Option<flock>, locktype: Option<FcntlLockType>) -> Result<bool, FcntlError>
 where RF: AsRawFd
 {
     let locktype = locktype.unwrap_or(FcntlLockType::Read);
     let arg = match flock {
         Some(flock) => FcntlArg::Flock(flock.with_locktype(locktype)),
-        None => FcntlArg::Flock(libc::flock {
-            l_type: locktype.into(),
-            l_whence: 0,
-            l_start: 0,
-            l_len: 0,
-            l_pid: 0,
-        })
+        None => FcntlArg::Flock(libc::flock::default().with_locktype(locktype)),
     };
 
     match fcntl(fd, FcntlCmd::SetLock, arg) {
@@ -177,9 +219,22 @@ where RF: AsRawFd
 }
 
 
-/// Locks the given file (using `FcntlCmd::SetLock`). If `flock` is `None` all parameters of the flock structure (
-/// `l_whence`, `l_start`, `l_len`, `l_pid`) will be set to 0. `flock.l_type` will be set to `libc::F_UNLCK` regardless
-/// of its original value.
+/// Releases the lock on the given file (using `FcntlCmd::SetLock`). If `flock` is `None` all parameters of the flock
+/// structure (`l_whence`, `l_start`, `l_len`, `l_pid`) will be set to 0. `flock.l_type` will be set to `libc::F_UNLCK`
+/// regardless of its original value.
+///
+/// ```rust
+/// use std::fs::OpenOptions;
+/// use fcntl::unlock_file;
+/// # let file_name = "README.md";
+///
+/// let file = OpenOptions::new().read(true).open(file_name).unwrap();
+/// match unlock_file(&file, None) {
+///     Ok(true) => println!("Lock successfully released"),
+///     Ok(false) => println!("Falied to release lock"),
+///     Err(err) => println!("Error: {:?}", err),
+/// }
+/// ```
 pub fn unlock_file<'a, RF>(fd: &'a RF, flock: Option<flock>) -> Result<bool, FcntlError>
 where RF: AsRawFd
 {
@@ -187,14 +242,8 @@ where RF: AsRawFd
     let arg = match flock {
         // unrwap is safe here
         Some(flock) => FcntlArg::Flock(flock.with_l_type(libc::F_UNLCK.try_into().unwrap())),
-        None => FcntlArg::Flock(libc::flock {
             // unwrap is safe here
-            l_type: libc::F_UNLCK.try_into().unwrap(),
-            l_whence: 0,
-            l_start: 0,
-            l_len: 0,
-            l_pid: 0,
-        })
+        None => FcntlArg::Flock(libc::flock::default().with_l_type(libc::F_UNLCK.try_into().unwrap(),)),
     };
 
     match fcntl(fd, FcntlCmd::SetLock, arg) {
@@ -211,6 +260,17 @@ where RF: AsRawFd
 
 
 impl FlockOperations for flock {
+    /// Sets all fields to 0.
+    fn default() -> Self {
+        flock {
+            l_type: 0,
+            l_whence: 0,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+        }
+    }
+
     fn with_l_type(mut self, l_type: c_short) -> Self {
         self.l_type = l_type;
         self
@@ -221,6 +281,22 @@ impl FlockOperations for flock {
         self
     }
 }
+
+
+impl Display for FcntlError {
+    fn fmt(&self, ff: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CommandNotImplemented(cmd) => write!(ff, "{:?} is not implemented for this operation", cmd),
+            Self::Errno(Some(errno)) => write!(ff, "syscall returned unknown or unexpected value: {}", errno),
+            Self::Errno(None) => write!(ff, "syscall returned error but we could not retrieve errno"),
+            Self::Internal => write!(ff, "we encountered an internal error. Please report this as a bug (fcntl)!"),
+            Self::InvalidArgForCmd => write!(ff, "the provided arg parameter is invalid for the requested cmd"),
+        }
+    }
+}
+
+
+impl Error for FcntlError {}
 
 
 impl From<FcntlCmd> for c_int {
