@@ -9,10 +9,7 @@
 //     - Methods from `FlockOperations` without the need for the extra trait
 //     - Other common traits (`Eq`, `PartialEq`, `Ord`, `PartialOrd`, `Hash`, `Debug`, `Display`, `Default`)
 
-use libc::{
-    __errno_location,
-    fcntl as libc_fcntl,
-};
+use libc::fcntl as libc_fcntl;
 use std::{
     convert::TryInto,
     error::Error,
@@ -21,19 +18,13 @@ use std::{
 };
 
 // re-exports
-pub use libc::{
-    c_int,
-    c_short,
-    flock,
-};
-
+pub use libc::{c_int, c_short, flock};
 
 /// Allowed types for the `arg` parameter for the `fcntl` syscall.
 #[derive(Copy, Clone)]
 pub enum FcntlArg {
     Flock(flock),
 }
-
 
 /// Allowed commands (`cmd` parameter) for the `fcntl` syscall.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -45,7 +36,6 @@ pub enum FcntlCmd {
     /// F_GETLK
     GetLock,
 }
-
 
 /// Error type which functions of this crate will return.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -61,7 +51,6 @@ pub enum FcntlError {
     InvalidArgForCmd,
 }
 
-
 /// Defines which types of lock can be set onto files.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FcntlLockType {
@@ -70,7 +59,6 @@ pub enum FcntlLockType {
     /// Wrapper for `F_WRLCK`
     Write,
 }
-
 
 /// This trait is used to define functions wich directly operate on `flock`.
 /// ```rust
@@ -91,7 +79,6 @@ pub trait FlockOperations {
     fn with_locktype(self, locktype: FcntlLockType) -> Self;
 }
 
-
 /// Calls `fcntl` with the given `cmd` and `arg`. On success, the structure passed to the `arg` parameter is returned
 /// as returned by the kernel.
 /// **Note**: Where possible convenience wrappers (such as `is_file_locked`, `lock_file`, etc.) should be used as they
@@ -106,7 +93,8 @@ pub trait FlockOperations {
 /// In case of an error (syscall returned an error, invalid `arg` provided, `cmd` not supported, etc.) an appropriate
 /// value is returned.
 pub fn fcntl<'a, RF>(fd: &'a RF, cmd: FcntlCmd, arg: FcntlArg) -> Result<FcntlArg, FcntlError>
-where RF: AsRawFd
+where
+    RF: AsRawFd,
 {
     let fd = fd.as_raw_fd();
     // different commands require different types of `arg`
@@ -119,7 +107,11 @@ where RF: AsRawFd
                     if rv == 0 {
                         Ok(FcntlArg::Flock(flock))
                     } else {
-                        let errno_ptr = unsafe { __errno_location() };
+                        #[cfg(not(target_os = "macos"))]
+                        let errno_ptr = unsafe { libc::__errno_location() };
+                        #[cfg(target_os = "macos")]
+                        let errno_ptr = unsafe { libc::__error() };
+
                         let errno = if errno_ptr.is_null() {
                             None
                         } else {
@@ -135,7 +127,6 @@ where RF: AsRawFd
         FcntlCmd::SetLockWait => Err(FcntlError::CommandNotImplemented(FcntlCmd::SetLockWait)),
     }
 }
-
 
 /// Checks whether the given file is locked.
 ///
@@ -157,11 +148,12 @@ where RF: AsRawFd
 /// }
 /// ```
 pub fn is_file_locked<'a, RF>(fd: &'a RF, flock: Option<flock>) -> Result<bool, FcntlError>
-where RF: AsRawFd
+where
+    RF: AsRawFd,
 {
     let arg = match flock {
         Some(flock) => FcntlArg::Flock(flock),
-        None => FcntlArg::Flock(libc::flock::default())
+        None => FcntlArg::Flock(libc::flock::default()),
     };
 
     match fcntl(fd, FcntlCmd::GetLock, arg) {
@@ -174,7 +166,6 @@ where RF: AsRawFd
         Err(err) => Err(err),
     }
 }
-
 
 /// Locks the given file (using `FcntlCmd::SetLock`). If `flock` is `None` all parameters of the flock structure (
 /// `l_whence`, `l_start`, `l_len`, `l_pid`) will be set to 0.  `locktype` controls the `l_type` parameter. When it is
@@ -197,8 +188,13 @@ where RF: AsRawFd
 ///     Err(err) => println!("Error: {:?}", err),
 /// }
 /// ```
-pub fn lock_file<'a, RF>(fd: &'a RF, flock: Option<flock>, locktype: Option<FcntlLockType>) -> Result<bool, FcntlError>
-where RF: AsRawFd
+pub fn lock_file<'a, RF>(
+    fd: &'a RF,
+    flock: Option<flock>,
+    locktype: Option<FcntlLockType>,
+) -> Result<bool, FcntlError>
+where
+    RF: AsRawFd,
 {
     let locktype = locktype.unwrap_or(FcntlLockType::Read);
     let arg = match flock {
@@ -212,12 +208,13 @@ where RF: AsRawFd
         // This should not happen, unless we have a bug..
         Ok(_) => Err(FcntlError::Internal),
         // "If a conflicting lock is held by another process, this call returns -1 and sets errno to EACCES or EAGAIN."
-        Err(FcntlError::Errno(Some(libc::EACCES))) | Err(FcntlError::Errno(Some(libc::EAGAIN))) => Ok(false),
+        Err(FcntlError::Errno(Some(libc::EACCES))) | Err(FcntlError::Errno(Some(libc::EAGAIN))) => {
+            Ok(false)
+        }
         // Everything else is also an error
         Err(err) => Err(err),
     }
 }
-
 
 /// Releases the lock on the given file (using `FcntlCmd::SetLock`). If `flock` is `None` all parameters of the flock
 /// structure (`l_whence`, `l_start`, `l_len`, `l_pid`) will be set to 0. `flock.l_type` will be set to `libc::F_UNLCK`
@@ -236,14 +233,16 @@ where RF: AsRawFd
 /// }
 /// ```
 pub fn unlock_file<'a, RF>(fd: &'a RF, flock: Option<flock>) -> Result<bool, FcntlError>
-where RF: AsRawFd
+where
+    RF: AsRawFd,
 {
-
     let arg = match flock {
         // unrwap is safe here
         Some(flock) => FcntlArg::Flock(flock.with_l_type(libc::F_UNLCK.try_into().unwrap())),
-            // unwrap is safe here
-        None => FcntlArg::Flock(libc::flock::default().with_l_type(libc::F_UNLCK.try_into().unwrap(),)),
+        // unwrap is safe here
+        None => {
+            FcntlArg::Flock(libc::flock::default().with_l_type(libc::F_UNLCK.try_into().unwrap()))
+        }
     };
 
     match fcntl(fd, FcntlCmd::SetLock, arg) {
@@ -257,7 +256,6 @@ where RF: AsRawFd
         Err(err) => Err(err),
     }
 }
-
 
 impl FlockOperations for flock {
     /// Sets all fields to 0.
@@ -282,22 +280,33 @@ impl FlockOperations for flock {
     }
 }
 
-
 impl Display for FcntlError {
     fn fmt(&self, ff: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CommandNotImplemented(cmd) => write!(ff, "{:?} is not implemented for this operation", cmd),
-            Self::Errno(Some(errno)) => write!(ff, "syscall returned unknown or unexpected value: {}", errno),
-            Self::Errno(None) => write!(ff, "syscall returned error but we could not retrieve errno"),
-            Self::Internal => write!(ff, "we encountered an internal error. Please report this as a bug (fcntl)!"),
-            Self::InvalidArgForCmd => write!(ff, "the provided arg parameter is invalid for the requested cmd"),
+            Self::CommandNotImplemented(cmd) => {
+                write!(ff, "{:?} is not implemented for this operation", cmd)
+            }
+            Self::Errno(Some(errno)) => write!(
+                ff,
+                "syscall returned unknown or unexpected value: {}",
+                errno
+            ),
+            Self::Errno(None) => {
+                write!(ff, "syscall returned error but we could not retrieve errno")
+            }
+            Self::Internal => write!(
+                ff,
+                "we encountered an internal error. Please report this as a bug (fcntl)!"
+            ),
+            Self::InvalidArgForCmd => write!(
+                ff,
+                "the provided arg parameter is invalid for the requested cmd"
+            ),
         }
     }
 }
 
-
 impl Error for FcntlError {}
-
 
 impl From<FcntlCmd> for c_int {
     fn from(cmd: FcntlCmd) -> c_int {
@@ -319,11 +328,10 @@ impl From<FcntlLockType> for c_short {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::{OpenOptions, remove_file};
+    use std::fs::{remove_file, OpenOptions};
 
     const LOCK_FILE_NAME: &str = "./test-work-dir/lock-test";
 
@@ -349,7 +357,11 @@ mod tests {
     fn check_file_locking_simple() {
         // nested so that `file` goes out of scope before we delete the file again
         let result = {
-            let file = OpenOptions::new().write(true).create(true).open(LOCK_FILE_NAME).unwrap();
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(LOCK_FILE_NAME)
+                .unwrap();
             is_file_locked(&file, None)
         };
 
@@ -360,13 +372,16 @@ mod tests {
         assert_eq!(result, Ok(false));
     }
 
-
     #[test]
     fn lock_file_simple() {
         // nested so that `file` goes out of scope before we delete the file again
         // create the file
         {
-            let file = OpenOptions::new().write(true).create(true).open(LOCK_FILE_NAME).unwrap();
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(LOCK_FILE_NAME)
+                .unwrap();
         }
         let file = OpenOptions::new().read(true).open(LOCK_FILE_NAME).unwrap();
 
@@ -380,7 +395,11 @@ mod tests {
         let _ = remove_file(LOCK_FILE_NAME);
 
         // final assertions
-        assert_eq!(result_is_file_locked_before, Ok(false), "Verify that file was unlocked");
+        assert_eq!(
+            result_is_file_locked_before,
+            Ok(false),
+            "Verify that file was unlocked"
+        );
         assert_eq!(result_lock_file_read, Ok(true), "Lock file");
         //assert_eq!(result_is_file_locked_after, Ok(true));
         assert_eq!(result_unlock_after, Ok(true), "Unlock file");
