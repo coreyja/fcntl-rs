@@ -43,7 +43,7 @@ pub enum FcntlError {
     /// The requested FcntlCmd is not yet handled by our implementation
     CommandNotImplemented(FcntlCmd),
     /// The syscall returned the respective error (which may be `None`, if the errno lookup fails)
-    Errno(Option<c_int>),
+    Errno(c_int, Option<c_int>),
     /// An `crate`-internal error occured. If you get this error variant, please report this as a bug!
     Internal,
     /// The enum variant of `arg` does not match the expected variant for the requested `cmd`. No operation was
@@ -118,7 +118,7 @@ where
                             // *should* be safe here as we checked against NULL pointer..
                             Some(unsafe { *errno_ptr })
                         };
-                        Err(FcntlError::Errno(errno))
+                        Err(FcntlError::Errno(rv, errno))
                     }
                 }
                 _ => Err(FcntlError::InvalidArgForCmd),
@@ -207,9 +207,8 @@ where
         // This should not happen, unless we have a bug..
         Ok(_) => Err(FcntlError::Internal),
         // "If a conflicting lock is held by another process, this call returns -1 and sets errno to EACCES or EAGAIN."
-        Err(FcntlError::Errno(Some(libc::EACCES))) | Err(FcntlError::Errno(Some(libc::EAGAIN))) => {
-            Ok(false)
-        }
+        Err(FcntlError::Errno(_, Some(libc::EACCES)))
+        | Err(FcntlError::Errno(_, Some(libc::EAGAIN))) => Ok(false),
         // Everything else is also an error
         Err(err) => Err(err),
     }
@@ -285,13 +284,16 @@ impl Display for FcntlError {
             Self::CommandNotImplemented(cmd) => {
                 write!(ff, "{:?} is not implemented for this operation", cmd)
             }
-            Self::Errno(Some(errno)) => write!(
+            Self::Errno(rv, Some(errno)) => write!(
                 ff,
-                "syscall returned unknown or unexpected value: {}",
+                "syscall {rv} returned unknown or unexpected error: {}",
                 errno
             ),
-            Self::Errno(None) => {
-                write!(ff, "syscall returned error but we could not retrieve errno")
+            Self::Errno(rv, None) => {
+                write!(
+                    ff,
+                    "syscall returned {rv} error but we could not retrieve errno"
+                )
             }
             Self::Internal => write!(
                 ff,
