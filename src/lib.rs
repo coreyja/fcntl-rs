@@ -99,7 +99,7 @@ where
     let fd = fd.as_raw_fd();
     // different commands require different types of `arg`
     match cmd {
-        FcntlCmd::GetLock | FcntlCmd::SetLock /*| FcntlCmd::SetLockWait*/ => {
+        FcntlCmd::GetLock | FcntlCmd::SetLock | FcntlCmd::SetLockWait => {
             match arg {
                 FcntlArg::Flock(flock) => {
                     let mut flock = flock;
@@ -116,15 +116,14 @@ where
                             None
                         } else {
                             // *should* be safe here as we checked against NULL pointer..
-                            Some(unsafe {*errno_ptr})
+                            Some(unsafe { *errno_ptr })
                         };
                         Err(FcntlError::Errno(errno))
                     }
                 }
                 _ => Err(FcntlError::InvalidArgForCmd),
             }
-        }
-        FcntlCmd::SetLockWait => Err(FcntlError::CommandNotImplemented(FcntlCmd::SetLockWait)),
+        } // FcntlCmd::SetLockWait => Err(FcntlError::CommandNotImplemented(FcntlCmd::SetLockWait)),
     }
 }
 
