@@ -201,7 +201,7 @@ where
         None => FcntlArg::Flock(libc::flock::default().with_locktype(locktype)),
     };
 
-    match fcntl(fd, FcntlCmd::SetLock, arg) {
+    match fcntl(fd, FcntlCmd::SetLockWait, arg) {
         // Locking was successful
         Ok(FcntlArg::Flock(_result)) => Ok(true),
         // This should not happen, unless we have a bug..
