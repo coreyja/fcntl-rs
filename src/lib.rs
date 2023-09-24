@@ -43,7 +43,7 @@ pub enum FcntlError {
     /// The requested FcntlCmd is not yet handled by our implementation
     CommandNotImplemented(FcntlCmd),
     /// The syscall returned the respective error (which may be `None`, if the errno lookup fails)
-    Errno(Option<c_int>),
+    Errno(c_int, Option<c_int>),
     /// An `crate`-internal error occured. If you get this error variant, please report this as a bug!
     Internal,
     /// The enum variant of `arg` does not match the expected variant for the requested `cmd`. No operation was
@@ -92,7 +92,7 @@ pub trait FlockOperations {
 ///
 /// In case of an error (syscall returned an error, invalid `arg` provided, `cmd` not supported, etc.) an appropriate
 /// value is returned.
-pub fn fcntl<'a, RF>(fd: &'a RF, cmd: FcntlCmd, arg: FcntlArg) -> Result<FcntlArg, FcntlError>
+pub fn fcntl<RF>(fd: &RF, cmd: FcntlCmd, arg: FcntlArg) -> Result<FcntlArg, FcntlError>
 where
     RF: AsRawFd,
 {
@@ -100,28 +100,25 @@ where
     // different commands require different types of `arg`
     match cmd {
         FcntlCmd::GetLock | FcntlCmd::SetLock | FcntlCmd::SetLockWait => {
-            match arg {
-                FcntlArg::Flock(flock) => {
-                    let mut flock = flock;
-                    let rv = unsafe { libc_fcntl(fd, cmd.into(), &mut flock) };
-                    if rv == 0 {
-                        Ok(FcntlArg::Flock(flock))
-                    } else {
-                        #[cfg(not(target_os = "macos"))]
-                        let errno_ptr = unsafe { libc::__errno_location() };
-                        #[cfg(target_os = "macos")]
-                        let errno_ptr = unsafe { libc::__error() };
+            let FcntlArg::Flock(flock) = arg;
 
-                        let errno = if errno_ptr.is_null() {
-                            None
-                        } else {
-                            // *should* be safe here as we checked against NULL pointer..
-                            Some(unsafe { *errno_ptr })
-                        };
-                        Err(FcntlError::Errno(errno))
-                    }
-                }
-                _ => Err(FcntlError::InvalidArgForCmd),
+            let mut flock = flock;
+            let rv = unsafe { libc_fcntl(fd, cmd.into(), &mut flock) };
+            if rv == 0 {
+                Ok(FcntlArg::Flock(flock))
+            } else {
+                #[cfg(not(target_os = "macos"))]
+                let errno_ptr = unsafe { libc::__errno_location() };
+                #[cfg(target_os = "macos")]
+                let errno_ptr = unsafe { libc::__error() };
+
+                let errno = if errno_ptr.is_null() {
+                    None
+                } else {
+                    // *should* be safe here as we checked against NULL pointer..
+                    Some(unsafe { *errno_ptr })
+                };
+                Err(FcntlError::Errno(rv, errno))
             }
         } // FcntlCmd::SetLockWait => Err(FcntlError::CommandNotImplemented(FcntlCmd::SetLockWait)),
     }
@@ -187,8 +184,8 @@ where
 ///     Err(err) => println!("Error: {:?}", err),
 /// }
 /// ```
-pub fn lock_file<'a, RF>(
-    fd: &'a RF,
+pub fn lock_file<RF>(
+    fd: &RF,
     flock: Option<flock>,
     locktype: Option<FcntlLockType>,
 ) -> Result<bool, FcntlError>
@@ -204,12 +201,9 @@ where
     match fcntl(fd, FcntlCmd::SetLockWait, arg) {
         // Locking was successful
         Ok(FcntlArg::Flock(_result)) => Ok(true),
-        // This should not happen, unless we have a bug..
-        Ok(_) => Err(FcntlError::Internal),
         // "If a conflicting lock is held by another process, this call returns -1 and sets errno to EACCES or EAGAIN."
-        Err(FcntlError::Errno(Some(libc::EACCES))) | Err(FcntlError::Errno(Some(libc::EAGAIN))) => {
-            Ok(false)
-        }
+        Err(FcntlError::Errno(_, Some(libc::EACCES)))
+        | Err(FcntlError::Errno(_, Some(libc::EAGAIN))) => Ok(false),
         // Everything else is also an error
         Err(err) => Err(err),
     }
@@ -231,24 +225,20 @@ where
 ///     Err(err) => println!("Error: {:?}", err),
 /// }
 /// ```
-pub fn unlock_file<'a, RF>(fd: &'a RF, flock: Option<flock>) -> Result<bool, FcntlError>
+pub fn unlock_file<RF>(fd: &RF, flock: Option<flock>) -> Result<bool, FcntlError>
 where
     RF: AsRawFd,
 {
     let arg = match flock {
         // unrwap is safe here
-        Some(flock) => FcntlArg::Flock(flock.with_l_type(libc::F_UNLCK.try_into().unwrap())),
+        Some(flock) => FcntlArg::Flock(flock.with_l_type(libc::F_UNLCK)),
         // unwrap is safe here
-        None => {
-            FcntlArg::Flock(libc::flock::default().with_l_type(libc::F_UNLCK.try_into().unwrap()))
-        }
+        None => FcntlArg::Flock(libc::flock::default().with_l_type(libc::F_UNLCK)),
     };
 
     match fcntl(fd, FcntlCmd::SetLock, arg) {
         // Unlocking was successful
         Ok(FcntlArg::Flock(_result)) => Ok(true),
-        // This should not happen, unless we have a bug..
-        Ok(_) => Err(FcntlError::Internal),
         // "If a conflicting lock is held by another process, this call returns -1 and sets errno to EACCES or EAGAIN."
         //Err(FcntlError::Errno(Some(libc::EACCES))) | Err(FcntlError::Errno(Some(libc::EAGAIN))) => Ok(false),
         // Everything else is also an error
@@ -285,13 +275,15 @@ impl Display for FcntlError {
             Self::CommandNotImplemented(cmd) => {
                 write!(ff, "{:?} is not implemented for this operation", cmd)
             }
-            Self::Errno(Some(errno)) => write!(
+            Self::Errno(rv, Some(errno)) => write!(
                 ff,
-                "syscall returned unknown or unexpected value: {}",
-                errno
+                "syscall returned {rv} with unknown or unexpected error: {errno}",
             ),
-            Self::Errno(None) => {
-                write!(ff, "syscall returned error but we could not retrieve errno")
+            Self::Errno(rv, None) => {
+                write!(
+                    ff,
+                    "syscall returned {rv} error but we could not retrieve errno"
+                )
             }
             Self::Internal => write!(
                 ff,
@@ -321,8 +313,8 @@ impl From<FcntlLockType> for c_short {
     fn from(locktype: FcntlLockType) -> c_short {
         match locktype {
             // These should never panic as their values are hardcoded in the kernel with low enough values
-            FcntlLockType::Read => libc::F_RDLCK.try_into().unwrap(),
-            FcntlLockType::Write => libc::F_WRLCK.try_into().unwrap(),
+            FcntlLockType::Read => libc::F_RDLCK,
+            FcntlLockType::Write => libc::F_WRLCK,
         }
     }
 }
