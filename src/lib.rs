@@ -35,6 +35,8 @@ pub enum FcntlCmd {
     SetLockWait,
     /// F_GETLK
     GetLock,
+    /// F_OFD_SETLKW
+    OpenFileDescriptorSetLockWait,
 }
 
 /// Error type which functions of this crate will return.
@@ -99,7 +101,10 @@ where
     let fd = fd.as_raw_fd();
     // different commands require different types of `arg`
     match cmd {
-        FcntlCmd::GetLock | FcntlCmd::SetLock | FcntlCmd::SetLockWait => {
+        FcntlCmd::GetLock
+        | FcntlCmd::SetLock
+        | FcntlCmd::SetLockWait
+        | FcntlCmd::OpenFileDescriptorSetLockWait => {
             match arg {
                 FcntlArg::Flock(flock) => {
                     let mut flock = flock;
@@ -315,6 +320,7 @@ impl From<FcntlCmd> for c_int {
             FcntlCmd::GetLock => libc::F_GETLK,
             FcntlCmd::SetLock => libc::F_SETLK,
             FcntlCmd::SetLockWait => libc::F_SETLKW,
+            FcntlCmd::OpenFileDescriptorSetLockWait => 38,
         }
     }
 }
