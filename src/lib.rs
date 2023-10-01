@@ -206,11 +206,9 @@ where
         None => FcntlArg::Flock(libc::flock::default().with_locktype(locktype)),
     };
 
-    match fcntl(fd, FcntlCmd::SetLockWait, arg) {
+    match fcntl(fd, FcntlCmd::OpenFileDescriptorSetLockWait, arg) {
         // Locking was successful
         Ok(FcntlArg::Flock(_result)) => Ok(true),
-        // This should not happen, unless we have a bug..
-        Ok(_) => Err(FcntlError::Internal),
         // "If a conflicting lock is held by another process, this call returns -1 and sets errno to EACCES or EAGAIN."
         Err(FcntlError::Errno(_, Some(libc::EACCES)))
         | Err(FcntlError::Errno(_, Some(libc::EAGAIN))) => Ok(false),
